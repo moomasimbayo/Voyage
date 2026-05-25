@@ -1,0 +1,6 @@
+{
+  "name": "Voyage",
+  "description": "Voyage is a futuristic gaming hub, catalog launcher, and system diagnostics control panel with customizable neon accent themes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
