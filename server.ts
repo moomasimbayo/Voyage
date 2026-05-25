@@ -2,7 +2,6 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import os from "os";
-import { createServer as createViteServer } from "vite";
 
 const PORT = 3000;
 const configPath = path.join(process.cwd(), "config.json");
@@ -402,14 +401,38 @@ async function startServer() {
   });
 
   // Mount Vite or serve static assets
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
+  const isElectron = typeof process.versions.electron !== "undefined";
+  const isProduction = process.env.NODE_ENV === "production" || isElectron;
+
+  if (!isProduction) {
+    try {
+      const { createServer: createViteServer } = await import("vite");
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } catch (e) {
+      console.error("Failed to start Vite dev server, falling back to static build:", e);
+      serveStatic();
+    }
   } else {
-    const distPath = path.join(process.cwd(), "dist");
+    serveStatic();
+  }
+
+  function serveStatic() {
+    let distPath = path.join(process.cwd(), "dist");
+    
+    // Check if the static index.html exists in common locations (e.g. packaged with Electron)
+    if (fs.existsSync(path.join(__dirname, "index.html"))) {
+      distPath = __dirname;
+    } else if (fs.existsSync(path.join(__dirname, "dist", "index.html"))) {
+      distPath = path.join(__dirname, "dist");
+    } else if (fs.existsSync(path.join(process.cwd(), "dist", "index.html"))) {
+      distPath = path.join(process.cwd(), "dist");
+    }
+    
+    console.log(`Serving static files from: ${distPath}`);
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
