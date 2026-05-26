@@ -72,24 +72,98 @@ async function fetchAndCacheSource(url: string) {
     }
 
     const data = await response.json();
-    if (!data || typeof data !== "object") {
-      throw new Error("Invalid response format: Not an object");
+    if (!data) {
+      throw new Error("Invalid response: Empty content");
     }
 
-    if (!("name" in data) || !("downloads" in data)) {
-      throw new Error("Invalid source format: Must contain 'name' and 'downloads' keys.");
+    // Determine default name/id from URL
+    let defaultSourceName = "SteamRip";
+    try {
+      const urlObj = new URL(url);
+      const basename = path.basename(urlObj.pathname, ".json");
+      if (basename && !["all", "games", "all.games"].includes(basename.toLowerCase())) {
+        // Clean up formatting
+        defaultSourceName = basename.replace(/[^a-zA-Z0-9]/g, " ");
+        defaultSourceName = defaultSourceName.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+      }
+    } catch {}
+
+    let sourceName = defaultSourceName;
+    let downloads: any[] = [];
+
+    // Intelligence: Normalize flat arrays as well as nested downloads
+    if (Array.isArray(data)) {
+      downloads = data;
+    } else if (typeof data === "object") {
+      if (data.name && Array.isArray(data.downloads)) {
+        sourceName = data.name;
+        downloads = data.downloads;
+      } else if (Array.isArray(data.downloads)) {
+        downloads = data.downloads;
+      } else if (Array.isArray(data.games)) {
+        downloads = data.games;
+        if (data.name) sourceName = data.name;
+      } else {
+        // Look for any standard array inside keys
+        const arrays = Object.values(data).filter(v => Array.isArray(v));
+        if (arrays.length > 0) {
+          downloads = arrays[0] as any[];
+        } else {
+          // Wrap single object
+          downloads = [data];
+        }
+      }
+    } else {
+      throw new Error("Invalid response format: MUST be a JSON object or array.");
     }
 
-    const sourceName = data.name;
+    // Standardize all game items inside downloads
+    const normalizedDownloads = downloads.map((g: any, index: number) => {
+      const title = g.title || g.Name || g.name || g.game_name || `Imported Item ${index + 1}`;
+      
+      let urls: string[] = [];
+      if (Array.isArray(g.download_urls)) {
+        urls = g.download_urls;
+      } else if (Array.isArray(g.downloadUrls)) {
+        urls = g.downloadUrls;
+      } else if (Array.isArray(g.downloads)) {
+        urls = g.downloads.map((d: any) => typeof d === "string" ? d : (d.url || d.Url || d.downloadUrl || d.link || d.Link));
+      } else {
+        const singleUrl = g.Url || g.url || g.downloadUrl || g.download_urls || g.link || g.Link || g.magnet;
+        if (singleUrl && typeof singleUrl === "string") {
+          urls = [singleUrl];
+        }
+      }
+
+      return {
+        title,
+        version: g.version || g.build || "Full Version",
+        file_size: g.file_size || g.size || g.fileSize || g.file_size || "15 GB",
+        genre: g.genre || g.genres || "Action, Adventure",
+        upload_date: g.upload_date || g.date || new Date().toISOString(),
+        download_urls: urls.filter(Boolean)
+      };
+    });
+
+    // Check we have some valid listings
+    if (normalizedDownloads.length === 0) {
+      throw new Error("No games could be extracted or normalized from this file.");
+    }
+
+    const compiledSource = {
+      name: sourceName,
+      downloads: normalizedDownloads
+    };
+
     const safeFilename = sourceName.replace(/[^a-z0-9_]/gi, "_").toLowerCase();
     const targetPath = path.join(sourcesDir, `${safeFilename}.json`);
 
-    fs.writeFileSync(targetPath, JSON.stringify(data, null, 2), "utf8");
+    fs.writeFileSync(targetPath, JSON.stringify(compiledSource, null, 2), "utf8");
 
     return {
       success: true,
       name: sourceName,
-      count: Array.isArray(data.downloads) ? data.downloads.length : 0
+      count: normalizedDownloads.length
     };
   } catch (error: any) {
     console.error(`Error fetching source from ${url}:`, error);
@@ -295,6 +369,49 @@ async function startServer() {
     }
   });
 
+  // Direct upload/import of a source JSON
+  app.post("/api/sources/upload", (req, res) => {
+    const { name, downloads } = req.body;
+    if (!name || !downloads || !Array.isArray(downloads)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Invalid JSON structure. Must be an object with 'name' and 'downloads' array." 
+      });
+    }
+
+    try {
+      const safeFilename = name.replace(/[^a-z0-9_]/gi, "_").toLowerCase();
+      const targetPath = path.join(sourcesDir, `${safeFilename}.json`);
+      
+      fs.writeFileSync(targetPath, JSON.stringify({ name, downloads }, null, 2), "utf8");
+
+      // Register inside configuration settings
+      const urlIdentifier = `local://${safeFilename}.json`;
+      const config = readConfig();
+      const existingIdx = config.sources.findIndex((s: any) => s.url === urlIdentifier || s.name === name);
+      
+      if (existingIdx >= 0) {
+        config.sources[existingIdx] = {
+          name: name,
+          url: urlIdentifier,
+          addedDate: new Date().toISOString().split("T")[0]
+        };
+      } else {
+        config.sources.push({
+          name: name,
+          url: urlIdentifier,
+          addedDate: new Date().toISOString().split("T")[0]
+        });
+      }
+
+      writeConfig(config);
+      res.json({ success: true, name, count: downloads.length });
+    } catch (err: any) {
+      console.error("Error writing upload JSON:", err);
+      res.status(500).json({ success: false, error: err.message || String(err) });
+    }
+  });
+
   // Returns all games from all cached source files
   app.get("/api/games", (req, res) => {
     try {
@@ -373,6 +490,91 @@ async function startServer() {
     } catch (error: any) {
       res.status(500).json({ success: false, error: error.message || String(error) });
     }
+  });
+
+  // Check SteamTools installation status
+  app.get("/api/steamtools/status", (req, res) => {
+    const isWindows = process.platform === "win32";
+    const commonPaths = [
+      "C:\\SteamTools\\SteamTools.exe",
+      "C:\\SteamTools\\SteamTools_GUI.exe",
+      "C:\\SteamTools\\gui.exe",
+      path.join(os.homedir(), "AppData\\Local\\SteamTools\\SteamTools.exe"),
+    ];
+    
+    let detectedPath = "";
+    let installed = false;
+    
+    if (isWindows) {
+      for (const p of commonPaths) {
+        if (fs.existsSync(p)) {
+          detectedPath = p;
+          installed = true;
+          break;
+        }
+      }
+      // Check if folder exists as broad fallback
+      if (!installed && fs.existsSync("C:\\SteamTools")) {
+        detectedPath = "C:\\SteamTools";
+        installed = true;
+      }
+    }
+    
+    res.json({
+      installed,
+      path: detectedPath,
+      platform: process.platform
+    });
+  });
+
+  // Run SteamTools
+  app.post("/api/steamtools/run", (req, res) => {
+    const isWindows = process.platform === "win32";
+    if (!isWindows) {
+      return res.status(400).json({ success: false, error: "Only supported on Windows platforms." });
+    }
+    
+    const commonPaths = [
+      "C:\\SteamTools\\SteamTools.exe",
+      "C:\\SteamTools\\SteamTools_GUI.exe",
+      "C:\\SteamTools\\gui.exe",
+      path.join(os.homedir(), "AppData\\Local\\SteamTools\\SteamTools.exe"),
+    ];
+    
+    let detectedPath = "";
+    for (const p of commonPaths) {
+      if (fs.existsSync(p)) {
+        detectedPath = p;
+        break;
+      }
+    }
+    
+    const { exec } = require("child_process");
+    
+    // Trigger deep link protocol (super reliable) and/or direct executable path
+    let command = "start steamtools://";
+    if (detectedPath && fs.lstatSync(detectedPath).isFile()) {
+      command = `start "" "${detectedPath}"`;
+    }
+    
+    console.log(`Executing SteamTools launch command: ${command}`);
+    exec(command, (error: any) => {
+      if (error) {
+        console.error("Failed to run SteamTools direct binary, falling back to protocol handler:", error);
+        // Try fallback to protocol handler
+        exec("start steamtools://", (fallbackError: any) => {
+          if (fallbackError) {
+            return res.status(500).json({ 
+              success: false, 
+              error: "Could not execute SteamTools. Ensure it is registered as steamtools:// custom protocol." 
+            });
+          }
+          return res.json({ success: true, method: "protocol_fallback" });
+        });
+      } else {
+        res.json({ success: true, method: detectedPath ? "direct_binary" : "protocol" });
+      }
+    });
   });
 
   // Returns system stats (live CPU/RAM/Uptime)

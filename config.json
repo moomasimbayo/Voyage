@@ -1,0 +1,15 @@
+{
+  "sources": [
+    {
+      "name": "SteamRip",
+      "url": "https://raw.githubusercontent.com/moomasimbayo/Voyage/refs/heads/main/All.Games.json",
+      "addedDate": "2024-05-25"
+    }
+  ],
+  "library": [],
+  "settings": {
+    "theme": "cyan-purple",
+    "systemStatsInterval": 3000,
+    "downloadCap": 0
+  }
+}

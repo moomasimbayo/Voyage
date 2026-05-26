@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Game } from "../types";
-import { Magnet, FolderOpen, X, Check, Copy, Link, Terminal } from "lucide-react";
+import { Magnet, FolderOpen, X, Check, Copy, Link, Terminal, Download, ArrowDownToLine } from "lucide-react";
 
 interface GameDetailsModalProps {
   game: Game | null;
@@ -11,6 +11,7 @@ interface GameDetailsModalProps {
   linkedPath?: string;
   themeStyle: any;
   onCopyMagnet: (magnet: string) => void;
+  onStartInAppDownload?: (game: Game) => void;
 }
 
 export default function GameDetailsModal({
@@ -21,7 +22,8 @@ export default function GameDetailsModal({
   isGameInLibrary,
   linkedPath,
   themeStyle,
-  onCopyMagnet
+  onCopyMagnet,
+  onStartInAppDownload
 }: GameDetailsModalProps) {
   const [exePath, setExePath] = useState("");
   const [isLinking, setIsLinking] = useState(false);
@@ -84,35 +86,54 @@ export default function GameDetailsModal({
           </div>
 
           {/* Action Row */}
-          <div className="flex flex-col sm:flex-row gap-3">
-            {magnetUrl ? (
-              <a
-                href={magnetUrl}
-                onClick={handleGenerateAndCopyMagnet}
-                className={`flex-1 ${themeStyle.bg} hover:brightness-110 text-neutral-950 px-4 py-3 rounded-lg font-mono text-xs font-semibold uppercase flex items-center justify-center gap-2 transition text-center`}
-              >
-                <Magnet className="w-4 h-4 shrink-0 fill-current" />
-                <span>🧲 {copied ? "Copied Magnet!" : "Magnet Download Link"}</span>
-              </a>
-            ) : (
-              <div className="flex-1 bg-neutral-800 py-3 text-center text-xs font-mono text-neutral-500 border border-white/5 rounded-lg select-none">
-                No Magnet URL found
-              </div>
-            )}
-
-            {/* Link Executive Button */}
+          <div className="space-y-3">
             {!isGameInLibrary ? (
-              <button
-                onClick={() => setIsLinking(true)}
-                className="flex-1 bg-neutral-800 hover:bg-neutral-750 border border-white/5 px-4 py-3 rounded-lg text-xs font-mono font-bold uppercase text-white flex items-center justify-center gap-2 transition"
-              >
-                <FolderOpen className="w-4 h-4 shrink-0 text-neutral-400" />
-                <span>Link Local EXE File</span>
-              </button>
+              <div className="space-y-3">
+                {/* 1. Prime In-App High Speed Download */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onStartInAppDownload) {
+                      onStartInAppDownload(game);
+                    }
+                  }}
+                  className={`w-full ${themeStyle.bg} hover:brightness-110 text-neutral-950 px-4 py-3 rounded-lg font-mono text-xs font-bold uppercase flex items-center justify-center gap-2 transition text-center cursor-pointer`}
+                >
+                  <Download className="w-4 h-4 shrink-0" />
+                  <span>⚡ IN-APP DIRECT DOWNLOAD</span>
+                </button>
+
+                {/* 2. Secondary options - horizontal split */}
+                <div className="flex flex-col sm:flex-row gap-3">
+                  {magnetUrl ? (
+                    <button
+                      type="button"
+                      onClick={handleGenerateAndCopyMagnet}
+                      className="flex-1 bg-neutral-800 hover:bg-neutral-750 border border-white/5 px-4 py-3 rounded-lg font-mono text-xs font-semibold uppercase flex items-center justify-center gap-2 transition text-center text-white cursor-pointer"
+                    >
+                      <Magnet className="w-4 h-4 shrink-0 text-red-400" />
+                      <span>{copied ? "Copied!" : "Copy Magnet"}</span>
+                    </button>
+                  ) : (
+                    <div className="flex-1 bg-neutral-950 py-3 text-center text-[10px] font-mono text-neutral-600 border border-white/5 rounded-lg select-none">
+                      No Magnet Link
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setIsLinking(true)}
+                    className="flex-1 bg-neutral-800 hover:bg-neutral-750 border border-white/5 px-4 py-3 rounded-lg text-xs font-mono font-bold uppercase text-white flex items-center justify-center gap-2 transition cursor-pointer"
+                  >
+                    <FolderOpen className="w-4 h-4 shrink-0 text-neutral-400" />
+                    <span>Link Local EXE File</span>
+                  </button>
+                </div>
+              </div>
             ) : (
-              <div className="flex-1 bg-emerald-500/10 border border-emerald-500/20 px-4 py-3 rounded-lg text-xs font-mono font-semibold text-emerald-400 flex items-center justify-center gap-2">
-                <Check className="w-4.5 h-4.5 shrink-0" />
-                <span>In Library</span>
+              <div className="bg-emerald-500/10 border border-emerald-500/20 px-4 py-3.5 rounded-lg text-xs font-mono font-semibold text-emerald-400 flex items-center justify-center gap-2">
+                <Check className="w-4.5 h-4.5 shrink-0 animate-pulse" />
+                <span>IN LIBRARY - INSTALLED & CAPTURED</span>
               </div>
             )}
           </div>

@@ -37,8 +37,42 @@ export default function ManifestsPanel({
   const [showAppAlert, setShowAppAlert] = useState(false);
   const [alertTargetGame, setAlertTargetGame] = useState<ManifestItem | null>(null);
 
+  // SteamTools custom process launching states
+  const [isLaunchingSteamTools, setIsLaunchingSteamTools] = useState(false);
+  const [steamToolsStatusMsg, setSteamToolsStatusMsg] = useState<{ text: string; type: "success" | "error" | "" }>({ text: "", type: "" });
+
   // Download feedback animation state
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  const handleRunSteamTools = async () => {
+    setIsLaunchingSteamTools(true);
+    setSteamToolsStatusMsg({ text: "Opening SteamTools app...", type: "success" });
+    try {
+      const res = await fetch("/api/steamtools/run", { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setSteamToolsStatusMsg({ text: "SteamTools successfully launched!", type: "success" });
+        if (!steamToolsInstalled) {
+          onToggleSteamToolsInstalled(); // dynamically toggle on in the client too!
+        }
+      } else {
+        setSteamToolsStatusMsg({ 
+          text: `Launch failed: ${data.error || "Launch SteamTools manually from C:\\SteamTools\\"}`, 
+          type: "error" 
+        });
+      }
+    } catch (err: any) {
+      setSteamToolsStatusMsg({ 
+        text: `Launch error: ${err.message || String(err)}`, 
+        type: "error" 
+      });
+    } finally {
+      setIsLaunchingSteamTools(false);
+      setTimeout(() => {
+        setSteamToolsStatusMsg(prev => prev.text.includes("failed") ? prev : { text: "", type: "" });
+      }, 5000);
+    }
+  };
 
   const fetchManifests = async (searchQuery: string, currentPage: number) => {
     setIsLoading(true);
@@ -138,38 +172,60 @@ export default function ManifestsPanel({
         </div>
 
         {/* Global SteamTools Indicator */}
-        <div className="flex items-center gap-3">
-          <div className="glass-panel px-3 py-2 rounded-lg border flex items-center gap-2.5" style={{ borderColor: `${themeStyle.color}15` }}>
-            <div className="flex flex-col">
-              <span className="text-[9px] uppercase font-bold text-neutral-500 font-mono tracking-wider">STEAMTOOLS PROTOCOL</span>
-              <div className="flex items-center gap-2">
-                <span className={`w-1.5 h-1.5 rounded-full ${steamToolsInstalled ? "bg-emerald-500 animate-pulse" : "bg-neutral-600 animate-pulse"}`} />
-                <span className={`text-[11px] font-mono font-bold uppercase ${steamToolsInstalled ? "text-emerald-400" : "text-neutral-400"}`}>
-                  {steamToolsInstalled ? "CLIENT RUNNING" : "NOT DETECTED"}
-                </span>
+        <div className="flex flex-col items-end gap-1.5">
+          <div className="flex items-center gap-3">
+            <div className="glass-panel px-3 py-2 rounded-lg border flex items-center gap-2.5" style={{ borderColor: `${themeStyle.color}15` }}>
+              <div className="flex flex-col">
+                <span className="text-[9px] uppercase font-bold text-neutral-500 font-mono tracking-wider">STEAMTOOLS PROTOCOL</span>
+                <div className="flex items-center gap-2">
+                  <span className={`w-1.5 h-1.5 rounded-full ${steamToolsInstalled ? "bg-emerald-500 animate-pulse" : "bg-neutral-600 animate-pulse"}`} />
+                  <span className={`text-[11px] font-mono font-bold uppercase ${steamToolsInstalled ? "text-emerald-400" : "text-neutral-400"}`}>
+                    {steamToolsInstalled ? "CLIENT RUNNING" : "NOT DETECTED"}
+                  </span>
+                </div>
               </div>
+
+              {/* Directly execute or launch the SteamTools program */}
+              <button
+                onClick={handleRunSteamTools}
+                disabled={isLaunchingSteamTools}
+                className={`px-2.5 py-1 text-[10px] uppercase font-mono font-bold rounded cursor-pointer border hover:scale-105 transition duration-150 ${
+                  isLaunchingSteamTools
+                    ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                    : "bg-[#00f0ff]/10 text-[#00f0ff] border-[#00f0ff]/20 hover:bg-[#00f0ff]/20 hover:text-white"
+                }`}
+                title="Launch SteamTools APP or deep-link protocol handler on Windows"
+              >
+                {isLaunchingSteamTools ? "LAUNCHING..." : "RUN STEAM TOOLS"}
+              </button>
+
+              <button
+                onClick={onToggleSteamToolsInstalled}
+                className={`px-2.5 py-1 text-[10px] uppercase font-mono font-bold rounded cursor-pointer border hover:scale-105 transition duration-150 ${
+                  steamToolsInstalled 
+                    ? "bg-neutral-900 text-neutral-400 border-white/5 hover:text-white" 
+                    : "bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/20"
+                }`}
+              >
+                {steamToolsInstalled ? "DISCONNECT" : "FORCE LINK"}
+              </button>
             </div>
+
             <button
-              onClick={onToggleSteamToolsInstalled}
-              className={`px-2.5 py-1 text-[10px] uppercase font-mono font-bold rounded cursor-pointer border hover:scale-105 transition duration-150 ${
-                steamToolsInstalled 
-                  ? "bg-neutral-900 text-neutral-400 border-white/5 hover:text-white" 
-                  : "bg-red-500/10 text-red-400 border-red-500/20 hover:bg-red-500/20"
-              }`}
+              onClick={handleSyncManifestList}
+              disabled={isSyncing}
+              className="p-2.5 bg-neutral-900 border border-white/5 hover:border-white/10 text-neutral-400 hover:text-white rounded-lg cursor-pointer transition flex items-center gap-1.5 duration-200"
+              title="Force refresh database manifest cache"
             >
-              {steamToolsInstalled ? "DISCONNECT" : "FORCE LINK"}
+              <RefreshCw className={`w-4 h-4 ${isSyncing ? "animate-spin" : ""}`} />
+              <span className="text-[10px] font-mono leading-none font-bold uppercase hidden sm:inline">Sync</span>
             </button>
           </div>
-
-          <button
-            onClick={handleSyncManifestList}
-            disabled={isSyncing}
-            className="p-2.5 bg-neutral-900 border border-white/5 hover:border-white/10 text-neutral-400 hover:text-white rounded-lg cursor-pointer transition flex items-center gap-1.5 duration-200"
-            title="Force refresh database manifest cache"
-          >
-            <RefreshCw className={`w-4 h-4 ${isSyncing ? "animate-spin" : ""}`} />
-            <span className="text-[10px] font-mono leading-none font-bold uppercase hidden sm:inline">Sync</span>
-          </button>
+          {steamToolsStatusMsg.text && (
+            <span className={`text-[10px] font-mono ${steamToolsStatusMsg.type === "error" ? "text-red-400" : "text-[#00f0ff] animate-pulse"}`}>
+              {steamToolsStatusMsg.text}
+            </span>
+          )}
         </div>
       </div>
 
@@ -210,7 +266,23 @@ export default function ManifestsPanel({
                 </div>
               </div>
 
-              <div className="flex flex-col sm:flex-row items-center gap-3 pt-3">
+              <div className="flex flex-col sm:flex-row flex-wrap items-center gap-2.5 pt-3">
+                <button
+                  onClick={async () => {
+                    await handleRunSteamTools();
+                    // On success, automatically trigger game addition
+                    setShowAppAlert(false);
+                    if (alertTargetGame) {
+                      setTimeout(() => handleDownloadClick(alertTargetGame), 200);
+                    }
+                  }}
+                  disabled={isLaunchingSteamTools}
+                  className="w-full sm:flex-1 bg-[#00f0ff]/20 text-[#00f0ff] hover:bg-[#00f0ff]/30 border border-[#00f0ff]/30 py-3 rounded-xl text-xs font-mono font-bold uppercase transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  title="Attempts to launch the local SteamTools client on your PC"
+                >
+                  <span>{isLaunchingSteamTools ? "LAUNCHING..." : "RUN STEAM TOOLS"}</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </button>
                 <button
                   onClick={() => {
                     // Force skip and bypass
@@ -231,7 +303,7 @@ export default function ManifestsPanel({
                   }}
                   className="w-full sm:flex-1 bg-white/10 hover:bg-white/15 py-3 rounded-xl text-xs font-mono font-bold uppercase transition flex items-center justify-center gap-1.5 text-white cursor-pointer"
                 >
-                  <span>Install SteamTools App</span>
+                  <span>Install App</span>
                   <ExternalLink className="w-3.5 h-3.5" />
                 </button>
                 <button

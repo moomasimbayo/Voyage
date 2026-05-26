@@ -1,12 +1,13 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { AppConfig, Source } from "../types";
-import { Trash2, AlertTriangle, Plus, Sliders, Settings, LayoutGrid, RotateCcw } from "lucide-react";
+import { Trash2, AlertTriangle, Plus, Sliders, Settings, LayoutGrid, RotateCcw, Upload } from "lucide-react";
 import HelmDiagnostics from "./HelmDiagnostics";
 
 interface SettingsPanelProps {
   config: AppConfig;
   onUpdateSettings: (newSettings: AppConfig["settings"]) => void;
   onAddSource: (url: string) => void;
+  onUploadSource: (name: string, downloads: any[]) => Promise<void>;
   onRemoveSource: (source: Source, removeGames: boolean) => void;
   onClearCache: () => void;
   onFullReset: () => void;
@@ -18,6 +19,7 @@ export default function SettingsPanel({
   config,
   onUpdateSettings,
   onAddSource,
+  onUploadSource,
   onRemoveSource,
   onClearCache,
   onFullReset,
@@ -27,6 +29,9 @@ export default function SettingsPanel({
   const [sourceUrlInput, setSourceUrlInput] = useState("");
   const [sourceToDelete, setSourceToDelete] = useState<Source | null>(null);
   const [linkedGamesCount, setLinkedGamesCount] = useState(0);
+  const [isUploading, setIsUploading] = useState(false);
+  const [schemaErrorModal, setSchemaErrorModal] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Manage speed cap adjustment
   const handleSpeedLimitChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -85,6 +90,127 @@ export default function SettingsPanel({
     }
   };
 
+  const handleFileUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const text = event.target?.result as string;
+        const json = JSON.parse(text);
+
+        // Normalize JSON to support both flat arrays and objects with downloads
+        let name = file.name.replace(/\.json$/i, "");
+        let downloads: any[] = [];
+
+        if (json && typeof json === "object") {
+          if (json.name && Array.isArray(json.downloads)) {
+            name = json.name;
+            downloads = json.downloads;
+          } else if (Array.isArray(json)) {
+            downloads = json;
+          } else if (Array.isArray(json.games)) {
+            downloads = json.games;
+            if (json.name) name = json.name;
+          } else {
+            // Check if any root keys hold an array
+            const arrays = Object.values(json).filter(v => Array.isArray(v));
+            if (arrays.length > 0) {
+              downloads = arrays[0] as any[];
+            } else {
+              downloads = [json];
+            }
+          }
+        }
+
+        // --- STRICT FORMAT VALIDATION ---
+        let isValidFormat = true;
+        if (downloads.length === 0) {
+          isValidFormat = false;
+        } else {
+          // Check sample of up to 5 items for title and url keys
+          const sampleSlice = downloads.slice(0, Math.min(downloads.length, 5));
+          const validCount = sampleSlice.filter((g: any) => {
+            const hasTitle = g.title || g.Name || g.name || g.game_name;
+            const hasUrl = g.Url || g.url || g.downloadUrl || g.download_urls || g.downloads || g.link || g.Link || g.magnet;
+            return hasTitle && hasUrl;
+          }).length;
+
+          if (validCount === 0) {
+            isValidFormat = false;
+          }
+        }
+
+        if (!isValidFormat) {
+          setIsUploading(false);
+          setSchemaErrorModal(true);
+          return;
+        }
+
+        // Normalize keys inside downloads to matches title/urls
+        const normalizedDownloads = downloads.map((g: any, index: number) => {
+          // Robust checking with Capital casing support (matches All.Games.json flat formats)
+          const title = g.title || g.Name || g.name || g.game_name || `Imported Item ${index + 1}`;
+          
+          let download_urls: string[] = [];
+          if (Array.isArray(g.download_urls)) {
+            download_urls = g.download_urls;
+          } else if (Array.isArray(g.downloadUrls)) {
+            download_urls = g.downloadUrls;
+          } else if (Array.isArray(g.downloads)) {
+            download_urls = g.downloads.map((d: any) => typeof d === "string" ? d : (d.url || d.Url || d.downloadUrl || d.link || d.Link));
+          } else if (g.download_urls && typeof g.download_urls === "string") {
+            download_urls = [g.download_urls];
+          } else if (g.downloadUrl && typeof g.downloadUrl === "string") {
+            download_urls = [g.downloadUrl];
+          } else if (g.url && typeof g.url === "string") {
+            download_urls = [g.url];
+          } else if (g.Url && typeof g.Url === "string") {
+            download_urls = [g.Url];
+          } else if (g.magnet && typeof g.magnet === "string") {
+            download_urls = [g.magnet];
+          } else if (g.link && typeof g.link === "string") {
+            download_urls = [g.link];
+          } else if (g.Link && typeof g.Link === "string") {
+            download_urls = [g.Link];
+          }
+
+          return {
+            title,
+            version: g.version || g.build || "Full Version",
+            file_size: g.file_size || g.size || g.fileSize || "6.5 GB",
+            genre: g.genre || g.genres || "Action, Adventure",
+            upload_date: g.upload_date || g.date || new Date().toISOString(),
+            download_urls: download_urls.filter(Boolean)
+          };
+        });
+
+        await onUploadSource(name, normalizedDownloads);
+      } catch (err: any) {
+        console.error("Failed to parse JSON configuration file:", err);
+        alert(`Failed to parse file: ${err.message || String(err)}`);
+      } finally {
+        setIsUploading(false);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
+      }
+    };
+
+    reader.onerror = () => {
+      alert("Failed to read the selected file.");
+      setIsUploading(false);
+    };
+
+    reader.readAsText(file);
+  };
+
   return (
     <div className="space-y-6 animate-fade-in text-left relative">
       {/* Visual Header */}
@@ -132,6 +258,38 @@ export default function SettingsPanel({
             </div>
             {/* Note: Example helper description text removed beneath textbox as requested by user! */}
           </form>
+
+          {/* OR divider */}
+          <div className="flex items-center gap-3 my-2 text-neutral-500 font-mono text-[9px]">
+            <div className="flex-1 h-px bg-white/5"></div>
+            <span>OR</span>
+            <div className="flex-1 h-px bg-white/5"></div>
+          </div>
+
+          {/* Local Drag & Drop File Upload */}
+          <div 
+            onClick={handleFileUploadClick}
+            className="border border-dashed border-white/5 hover:border-[#00f0ff]/30 hover:bg-[#00f0ff]/5 p-4 rounded-xl text-center cursor-pointer transition select-none flex flex-col items-center justify-center gap-1.5"
+          >
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              onChange={handleFileChange} 
+              accept=".json" 
+              className="hidden" 
+            />
+            {isUploading ? (
+              <div className="w-4 h-4 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: themeStyle.color, borderTopColor: "transparent" }}></div>
+            ) : (
+              <Upload className="w-5 h-5 text-neutral-400 animate-pulse" />
+            )}
+            <div className="text-xs font-semibold text-neutral-300">
+              {isUploading ? "Processing database..." : "Import Local JSON File"}
+            </div>
+            <div className="text-[10px] text-neutral-500 font-mono uppercase">
+              Drag file here or click to browse
+            </div>
+          </div>
 
           {/* Sources List */}
           <div className="space-y-3">
@@ -343,6 +501,113 @@ export default function SettingsPanel({
                   Cancel Operation
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* JSON Schema Format Mismatch & Diagnostic Guide Modal */}
+      {schemaErrorModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 overflow-y-auto">
+          <div className="w-full max-w-2xl bg-neutral-900 border border-amber-500/30 rounded-xl overflow-hidden shadow-2xl animate-scale-up text-left my-8">
+            {/* Header */}
+            <div className="flex items-center justify-between p-5 bg-amber-950/20 border-b border-white/5">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="w-6 h-6 text-amber-500 shrink-0" />
+                <div>
+                  <h3 className="text-base font-bold text-white tracking-wide uppercase font-display">JSON File Schema Mismatch</h3>
+                  <p className="text-[10px] uppercase font-mono text-neutral-400 mt-0.5">Validation failed: Invalid gaming file configuration</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setSchemaErrorModal(false)}
+                className="text-neutral-400 hover:text-white bg-white/5 hover:bg-white/10 p-1.5 rounded-lg transition"
+              >
+                <span className="text-xs font-bold px-1 font-mono">ESC</span>
+              </button>
+            </div>
+
+            {/* Layout Information Body */}
+            <div className="p-6 space-y-5 overflow-y-auto max-h-[70vh] custom-scroll">
+              <p className="text-xs text-neutral-300 leading-relaxed">
+                The uploaded database JSON file cannot be loaded because it does not match our registry formats. In order to list game files, titles, and download linkages in local and remote interfaces, your file <strong>must contain at least one valid item</strong> that aligns with one of our accepted specifications:
+              </p>
+
+              <div className="space-y-4">
+                {/* Structure A */}
+                <div className="bg-neutral-950/80 border border-white/5 rounded-lg p-4 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-mono font-bold tracking-wider text-emerald-400 uppercase">
+                      Template A: SteamRip Catalog Schema
+                    </span>
+                    <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 uppercase font-semibold">Recommended</span>
+                  </div>
+                  <p className="text-[11px] text-neutral-400">
+                    A root object holding a repository <code className="text-neutral-200">name</code> string and a <code className="text-neutral-200">downloads</code> array containing game listing items.
+                  </p>
+                  <pre className="text-[10px] bg-neutral-900 p-3 rounded border border-white/5 text-neutral-400 font-mono overflow-x-auto leading-normal select-all">
+{`{
+  "name": "My Custom Library Name",
+  "downloads": [
+    {
+      "title": "Minecraft",
+      "version": "1.21",
+      "file_size": "1.2 GB",
+      "genre": "Sandbox, Adventure",
+      "download_urls": ["https://steamrip.com/minecraft"]
+    }
+  ]
+}`}
+                  </pre>
+                </div>
+
+                {/* Structure B */}
+                <div className="bg-neutral-950/80 border border-white/5 rounded-lg p-4 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-mono font-bold tracking-wider text-[#00f0ff] uppercase">
+                      Template B: Flat Games List Schema (All.Games.json style)
+                    </span>
+                    <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-[#00f0ff]/10 text-[#00f0ff] border border-[#00f0ff]/20 uppercase font-semibold">Casing Agnostic</span>
+                  </div>
+                  <p className="text-[11px] text-neutral-400">
+                    A flat JSON array of objects, containing individual entries with game names and setup URLs. Properties can be capitalized or lowercase tags.
+                  </p>
+                  <pre className="text-[10px] bg-neutral-900 p-3 rounded border border-white/5 text-neutral-400 font-mono overflow-x-auto leading-normal select-all">
+{`[
+  {
+    "Name": "#BLUD",
+    "Url": "https://steamrip.com/blud"
+  },
+  {
+    "title": "Minecraft",
+    "download_urls": ["https://steamrip.com/minecraft"]
+  }
+]`}
+                  </pre>
+                </div>
+              </div>
+
+              {/* Troubleshooting */}
+              <div className="rounded-lg bg-amber-500/5 border border-amber-500/10 p-4 flex gap-3 text-left">
+                <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <h4 className="text-[11px] font-bold text-amber-500 uppercase tracking-wider font-mono">Troubleshooting File Imports</h4>
+                  <p className="text-[11px] text-neutral-400 leading-snug">
+                    Ensure there are no trailing commas, mismatched quotes, or system registry artifacts in the JSON payload. Ensure your files are saved using the <code className="text-amber-400">.json</code> extension before uploading.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="bg-neutral-950 px-5 py-4 flex justify-end gap-3 border-t border-white/5">
+              <button
+                type="button"
+                onClick={() => setSchemaErrorModal(false)}
+                className="px-5 py-2.5 bg-neutral-800 hover:bg-neutral-750 font-mono text-xs font-bold uppercase rounded-lg text-white transition cursor-pointer"
+              >
+                Ack / Close Guide
+              </button>
             </div>
           </div>
         </div>

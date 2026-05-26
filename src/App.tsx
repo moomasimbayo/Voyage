@@ -4,13 +4,14 @@
  */
 
 import React, { useState, useEffect, useRef } from "react";
-import { AppConfig, Game, Source, SystemStats } from "./types";
+import { AppConfig, Game, Source, SystemStats, DownloadItem } from "./types";
 import DashboardPanel from "./components/DashboardPanel";
 import DiscoverPanel from "./components/DiscoverPanel";
 import LibraryPanel from "./components/LibraryPanel";
 import SettingsPanel from "./components/SettingsPanel";
 import GameDetailsModal from "./components/GameDetailsModal";
 import ManifestsPanel from "./components/ManifestsPanel";
+import DownloadsPanel from "./components/DownloadsPanel";
 import { Sdl2Emulator } from "./utils/sdl2Emulator";
 import {
   LayoutDashboard,
@@ -23,7 +24,8 @@ import {
   Sparkles,
   Cpu,
   Layers,
-  Gamepad2
+  Gamepad2,
+  Download
 } from "lucide-react";
 
 // Default configuration with SteamRip preloaded
@@ -100,7 +102,15 @@ const THEME_PALETTE: Record<string, {
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<"dashboard" | "discover" | "library" | "settings" | "manifests">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "discover" | "library" | "settings" | "manifests" | "downloads">("dashboard");
+  const [downloads, setDownloads] = useState<DownloadItem[]>(() => {
+    try {
+      const saved = localStorage.getItem("voyage_downloads");
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [config, setConfig] = useState<AppConfig>(DEFAULT_CONFIG);
   const [catalogGames, setCatalogGames] = useState<Game[]>([]);
   const [stats, setStats] = useState<SystemStats>(DEFAULT_STATS);
@@ -130,7 +140,124 @@ export default function App() {
   useEffect(() => {
     fetchConfig();
     fetchGamesList();
+    checkSteamToolsStatus();
   }, []);
+
+  // Save downloads to local cache
+  useEffect(() => {
+    try {
+      localStorage.setItem("voyage_downloads", JSON.stringify(downloads));
+    } catch {}
+  }, [downloads]);
+
+  // Download simulation tick logic
+  useEffect(() => {
+    const hasActive = downloads.some((d) => d.status === "downloading" || d.status === "extracting");
+    if (!hasActive) return;
+
+    const interval = setInterval(() => {
+      setDownloads((prevList) => {
+        let updated = false;
+        const nextList = prevList.map((d) => {
+          if (d.status === "downloading") {
+            updated = true;
+
+            // Parse total file size
+            const totalStr = d.totalSize || "15 GB";
+            let totalMb = 15360; 
+            const parsedNum = parseFloat(totalStr.replace(/[^0-9.]/g, ""));
+            if (!isNaN(parsedNum)) {
+              if (totalStr.toLowerCase().includes("gb")) {
+                totalMb = parsedNum * 1024;
+              } else if (totalStr.toLowerCase().includes("kb")) {
+                totalMb = parsedNum / 1024;
+              } else {
+                totalMb = parsedNum;
+              }
+            }
+
+            // Cap respecting settings
+            const cap = config.settings.downloadCap;
+            let speedMbSec = 0;
+            if (cap > 0) {
+              speedMbSec = cap * (0.85 + Math.random() * 0.13); // 85% - 98% of cap
+            } else {
+              speedMbSec = 35 + Math.random() * 30; // 35 - 65 MB/s
+            }
+
+            const currentRatio = d.progress / 100;
+            const currentDownloadedMb = totalMb * currentRatio;
+            const nextDownloadedMb = Math.min(totalMb, currentDownloadedMb + speedMbSec);
+            let nextProgress = Math.round((nextDownloadedMb / totalMb) * 100);
+
+            if (nextProgress >= 100) {
+              nextProgress = 100;
+              return {
+                ...d,
+                progress: 100,
+                downloadSpeed: "0.0 MB/s",
+                downloadedSize: totalStr,
+                eta: "0s",
+                status: "extracting" as const
+              };
+            } else {
+              let downloadedSizeStr = "";
+              if (totalStr.toLowerCase().includes("gb")) {
+                downloadedSizeStr = `${(nextDownloadedMb / 1024).toFixed(1)} GB`;
+              } else {
+                downloadedSizeStr = `${nextDownloadedMb.toFixed(0)} MB`;
+              }
+
+              const remainingMb = totalMb - nextDownloadedMb;
+              const remainingSec = Math.ceil(remainingMb / speedMbSec);
+              let etaStr = "";
+              if (remainingSec > 60) {
+                const mins = Math.floor(remainingSec / 60);
+                const secs = remainingSec % 60;
+                etaStr = `${mins}m ${secs}s`;
+              } else {
+                etaStr = `${remainingSec}s`;
+              }
+
+              return {
+                ...d,
+                progress: nextProgress,
+                downloadSpeed: `${speedMbSec.toFixed(1)} MB/s`,
+                downloadedSize: downloadedSizeStr,
+                eta: etaStr,
+                status: "downloading" as const
+              };
+            }
+          } else if (d.status === "extracting") {
+            updated = true;
+            const isCompleted = Math.random() > 0.45; // roughly 2 seconds
+            if (isCompleted) {
+              const cleanTitle = d.game.title.replace(/[^a-zA-Z0-9]/g, "");
+              const mockExePath = `C:\\Games\\VoyageLibrary\\${cleanTitle}\\${cleanTitle}.exe`;
+              
+              // Run automatic linkage mapping
+              setTimeout(() => {
+                handleAutoInstallToLibrary(d.game, mockExePath);
+              }, 10);
+
+              return {
+                ...d,
+                progress: 100,
+                downloadSpeed: "0.0 MB/s",
+                eta: "0s",
+                status: "completed" as const
+              };
+            }
+          }
+          return d;
+        });
+
+        return updated ? nextList : prevList;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [downloads, config.settings.downloadCap]);
 
   // Poll system diagnostics
   useEffect(() => {
@@ -214,6 +341,25 @@ export default function App() {
       window.removeEventListener("keydown", handleBigPictureKeys);
     };
   }, [bigPictureMode, config.library, bpSelectedIndex]);
+
+  // Real-time gamepad connection listeners
+  useEffect(() => {
+    const handleGamepadConnected = (e: GamepadEvent) => {
+      addToast(`Controller Connected: ${e.gamepad.id}`, "success");
+    };
+
+    const handleGamepadDisconnected = (e: GamepadEvent) => {
+      addToast(`Controller Disconnected: ${e.gamepad.id}`, "info");
+    };
+
+    window.addEventListener("gamepadconnected", handleGamepadConnected);
+    window.addEventListener("gamepaddisconnected", handleGamepadDisconnected);
+
+    return () => {
+      window.removeEventListener("gamepadconnected", handleGamepadConnected);
+      window.removeEventListener("gamepaddisconnected", handleGamepadDisconnected);
+    };
+  }, []);
 
   // Voyage Steer-Helm SDL2 Input Controller Emulative Thread
   useEffect(() => {
@@ -326,6 +472,25 @@ export default function App() {
     }
   };
 
+  const checkSteamToolsStatus = async () => {
+    try {
+      const res = await fetch("/api/steamtools/status");
+      if (res.ok) {
+        const data = await res.json();
+        if (data.installed) {
+          setSteamToolsInstalled(true);
+          try {
+            localStorage.setItem("steamtools_installed", "true");
+          } catch (e) {
+            // ignore
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Could not check native SteamTools system status:", err);
+    }
+  };
+
   const saveConfig = async (updatedConfig: AppConfig) => {
     setConfig(updatedConfig);
     localStorage.setItem("voyage_config", JSON.stringify(updatedConfig));
@@ -388,6 +553,32 @@ export default function App() {
     }
   };
 
+  // Upload/Import Source directly from JSON on local computer
+  const handleUploadSource = async (name: string, downloads: any[]) => {
+    setIsLoadingSources(true);
+    addToast("Uploading database JSON...", "info");
+    try {
+      const res = await fetch("/api/sources/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, downloads })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        addToast(`Successfully imported: ${data.name} (${data.count} games)`, "success");
+        await fetchConfig();
+        await fetchGamesList();
+      } else {
+        addToast(`Import failed: ${data.error || "Formatting error"}`, "error");
+      }
+    } catch (err: any) {
+      addToast(`System Connection failure: ${err.message || String(err)}`, "error");
+    } finally {
+      setIsLoadingSources(false);
+    }
+  };
+
   // Remove Source and clean up linked games
   const handleRemoveSource = async (source: Source, removeGames: boolean) => {
     try {
@@ -442,6 +633,87 @@ export default function App() {
 
     await saveConfig(nextConfig);
     addToast(`Shortcut saved: "${game.title}" is bound in library.`, "success");
+  };
+
+  // Automatically install/map game down status to library
+  const handleAutoInstallToLibrary = async (game: Game, exePath: string) => {
+    setConfig((prevConfig) => {
+      const exists = prevConfig.library.some((g) => g.title.toLowerCase() === game.title.toLowerCase());
+      if (exists) return prevConfig;
+
+      const installedGame: Game = {
+        ...game,
+        type: "multiplayer",
+        linkPath: exePath,
+        addedDate: new Date().toISOString().split("T")[0]
+      };
+
+      const revised = {
+        ...prevConfig,
+        library: [...prevConfig.library, installedGame]
+      };
+      
+      localStorage.setItem("voyage_config", JSON.stringify(revised));
+      fetch("/api/config", {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify(revised)
+      }).catch(err => console.warn("Sync failed, local only", err));
+
+      setTimeout(() => {
+        addToast(`Successfully installed & mapped: "${game.title}"! Play now.`, "success");
+      }, 100);
+
+      return revised;
+    });
+  };
+
+  // Download controller actions
+  const onPauseDownload = (id: string) => {
+    setDownloads((prev) =>
+      prev.map((d) => (d.id === id ? { ...d, status: "paused" } : d))
+    );
+  };
+
+  const onResumeDownload = (id: string) => {
+    setDownloads((prev) =>
+      prev.map((d) => (d.id === id ? { ...d, status: "downloading" } : d))
+    );
+  };
+
+  const onCancelDownload = (id: string) => {
+    setDownloads((prev) => prev.filter((d) => d.id !== id));
+  };
+
+  const onClearCompleted = () => {
+    setDownloads((prev) => prev.filter((d) => d.status !== "completed" && d.status !== "allocated"));
+  };
+
+  const onStartInAppDownload = (game: Game) => {
+    const isAlreadyDownloading = downloads.some((d) => d.game.title.toLowerCase() === game.title.toLowerCase());
+    if (isAlreadyDownloading) {
+      addToast(`"${game.title}" is already in active download stream!`, "info");
+      setActiveTab("downloads");
+      setSelectedGame(null);
+      return;
+    }
+
+    const sizeStr = game.fileSize || game.size || "15 GB";
+    const newDownload: DownloadItem = {
+      id: Date.now().toString() + Math.random().toString(),
+      game,
+      progress: 0,
+      downloadSpeed: "Calculating...",
+      downloadedSize: "0 MB",
+      totalSize: sizeStr,
+      eta: "Calculating...",
+      status: "downloading"
+    };
+
+    setDownloads((prev) => [newDownload, ...prev]);
+    setSelectedGame(null);
+    setActiveTab("downloads");
+    addToast(`⚡ Direct in-app stream initiated for "${game.title}"!`, "success");
   };
 
   // Unlink details
@@ -597,7 +869,7 @@ export default function App() {
             <svg className="w-3 h-3" viewBox="0 0 24 24" stroke="currentColor"><rect x="5" y="5" width="14" height="14" rx="1" strokeWidth="2"/></svg>
           </div>
           <div className="w-8 h-8 flex items-center justify-center text-gray-400 hover:bg-red-600 hover:text-white cursor-pointer rounded transition">
-            <svg className="w-3 h-3" viewBox="0 0 24 24" stroke="currentColor"><line x1="18" y1="6" x2="6" y2="18" strokeWidth="2"/><line x1="6" y1="6" x2="18" y2="18" stroke-width="2"/></svg>
+            <svg className="w-3 h-3" viewBox="0 0 24 24" stroke="currentColor"><line x1="18" y1="6" x2="6" y2="18" strokeWidth="2"/><line x1="6" y1="6" x2="18" y2="18" strokeWidth="2"/></svg>
           </div>
         </div>
       </header>
@@ -662,6 +934,23 @@ export default function App() {
                 <span className={`text-[10px] bg-neutral-900 border border-white/5 px-2 py-0.5 rounded-md ${themeStyle.text}`}>
                   {config.library.length}
                 </span>
+              </button>
+              <button
+                onClick={() => setActiveTab("downloads")}
+                className={`w-full text-left px-3.5 py-3 rounded-r-md rounded-l-none text-xs font-semibold tracking-wide uppercase transition-all flex items-center justify-between cursor-pointer border-l-2 ${
+                  activeTab === "downloads"
+                    ? `bg-white/5 text-[#00f0ff] ${themeStyle.border}`
+                    : "text-neutral-400 border-transparent hover:text-white hover:bg-white/[0.02]"
+                }`}
+                style={{ color: activeTab === "downloads" ? themeStyle.color : undefined }}
+              >
+                <div className="flex items-center gap-3.5">
+                  <Download className="w-4 h-4" />
+                  <span>Downloads</span>
+                </div>
+                {downloads.filter(d => d.status === "downloading" || d.status === "extracting").length > 0 && (
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                )}
               </button>
               <button
                 onClick={() => setActiveTab("manifests")}
@@ -764,6 +1053,7 @@ export default function App() {
               config={config}
               onUpdateSettings={(updated) => saveConfig({ ...config, settings: updated })}
               onAddSource={handleAddSource}
+              onUploadSource={handleUploadSource}
               onRemoveSource={handleRemoveSource}
               onClearCache={handleClearCache}
               onFullReset={handleFullReset}
@@ -772,7 +1062,7 @@ export default function App() {
             />
           )}
 
-          {/* Steam Manifests Panel View */}
+                    {/* Steam Manifests Panel View */}
           {activeTab === "manifests" && (
             <ManifestsPanel
               onAddGameToLibrary={handleAddManualGame}
@@ -780,6 +1070,19 @@ export default function App() {
               themeStyle={themeStyle}
               steamToolsInstalled={steamToolsInstalled}
               onToggleSteamToolsInstalled={handleToggleSteamToolsInstalled}
+            />
+          )}
+
+          {/* Voyage Downloads Panel View */}
+          {activeTab === "downloads" && (
+            <DownloadsPanel
+              downloads={downloads}
+              onPauseDownload={onPauseDownload}
+              onResumeDownload={onResumeDownload}
+              onCancelDownload={onCancelDownload}
+              onClearCompleted={onClearCompleted}
+              themeStyle={themeStyle}
+              downloadCap={config.settings.downloadCap}
             />
           )}
         </main>
@@ -796,6 +1099,7 @@ export default function App() {
           linkedPath={config.library.find((g) => g.title.toLowerCase() === selectedGame.title.toLowerCase())?.linkPath}
           themeStyle={themeStyle}
           onCopyMagnet={handleCopyMagnetToClipboard}
+          onStartInAppDownload={onStartInAppDownload}
         />
       )}
 

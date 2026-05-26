@@ -1,3 +1,14 @@
+export interface DownloadItem {
+  id: string;
+  game: Game;
+  progress: number; // 0 to 100
+  downloadSpeed: string; // e.g., "12.4 MB/s"
+  downloadedSize: string; // e.g., "4.2 GB"
+  totalSize: string; // e.g., "45.0 GB"
+  eta: string; // e.g., "12m 4s"
+  status: "downloading" | "paused" | "extracting" | "completed" | "allocated";
+}
+
 export interface Game {
   title: string;
   source: string;
